@@ -11,19 +11,14 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup, Tag
 from requests import RequestException
 
-JPX_HISTORY_URLS: dict[int, str] = {
-    2026: "https://www.jpx.co.jp/listing/market-alerts/supervision/01.html",
-    2025: "https://www.jpx.co.jp/listing/market-alerts/supervision/01-archives-01.html",
-    2024: "https://www.jpx.co.jp/listing/market-alerts/supervision/01-archives-02.html",
-    2023: "https://www.jpx.co.jp/listing/market-alerts/supervision/01-archives-03.html",
-    2022: "https://www.jpx.co.jp/listing/market-alerts/supervision/01-archives-04.html",
-}
+JPX_HISTORY_CURRENT_URL = "https://www.jpx.co.jp/listing/market-alerts/supervision/01.html"
 
 BASE_CSV_HEADER = ["コード", "市場", "日付", "日付"]
 DEFAULT_OUTPUT_PATH = Path("supervision.csv")
@@ -137,7 +132,79 @@ def normalize_row_cells(cells: list[str], expected_size: int) -> list[str]:
     return cells
 
 
-def parse_history_table(html: str, year: int, source_url: str) -> list[dict[str, str]]:
+def normalize_history_url(candidate_url: str, base_url: str) -> str:
+    absolute_url = urljoin(base_url, normalize_text(candidate_url))
+    path = urlparse(absolute_url).path
+    if re.fullmatch(r"/listing/market-alerts/supervision/01(?:-archives-\d+)?\.html", path):
+        return absolute_url
+    return ""
+
+
+def history_url_sort_key(url: str) -> tuple[int, int]:
+    path = urlparse(url).path
+    if path.endswith("/01.html"):
+        return (0, 0)
+    match = re.search(r"01-archives-(\d+)\.html$", path)
+    if match:
+        return (1, int(match.group(1)))
+    return (2, 0)
+
+
+def extract_history_urls_from_html(html: str, base_url: str) -> list[str]:
+    if not html:
+        return []
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    soup = BeautifulSoup(html, "html.parser")
+
+    def append_url(candidate_url: str) -> None:
+        normalized_url = normalize_history_url(candidate_url, base_url)
+        if normalized_url and normalized_url not in seen:
+            seen.add(normalized_url)
+            urls.append(normalized_url)
+
+    for option in soup.find_all("option"):
+        append_url(option.get("value", ""))
+    for anchor in soup.find_all("a", href=True):
+        append_url(anchor.get("href", ""))
+    for candidate_url in re.findall(
+        r"(?:https://www\.jpx\.co\.jp)?/listing/market-alerts/supervision/01(?:-archives-\d+)?\.html",
+        html,
+    ):
+        append_url(candidate_url)
+
+    return sorted(urls, key=history_url_sort_key)
+
+
+def discover_history_archive_urls(base_url: str) -> list[str]:
+    archive_urls: list[str] = []
+    archive_number = 1
+
+    while True:
+        archive_url = urljoin(base_url, f"01-archives-{archive_number:02d}.html")
+        html = fetch_html(archive_url)
+        if not html:
+            break
+        if find_history_table(BeautifulSoup(html, "html.parser")) is None:
+            break
+        archive_urls.append(archive_url)
+        archive_number += 1
+
+    return archive_urls
+
+
+def discover_history_urls() -> list[str]:
+    current_html = fetch_html(JPX_HISTORY_CURRENT_URL)
+    discovered_urls = extract_history_urls_from_html(current_html, JPX_HISTORY_CURRENT_URL)
+    if JPX_HISTORY_CURRENT_URL not in discovered_urls:
+        discovered_urls.insert(0, JPX_HISTORY_CURRENT_URL)
+    if len(discovered_urls) == 1 and current_html:
+        discovered_urls.extend(discover_history_archive_urls(JPX_HISTORY_CURRENT_URL))
+    return sorted(set(discovered_urls), key=history_url_sort_key)
+
+
+def parse_history_table(html: str, source_url: str) -> list[dict[str, str]]:
     if not html:
         return []
 
@@ -194,7 +261,7 @@ def parse_history_table(html: str, year: int, source_url: str) -> list[dict[str,
                 "銘柄名": normalize_text(record.get("銘柄名", "")),
                 "備考": normalize_text(record.get("備考", "")),
                 "source_url": source_url,
-                "year": str(year),
+                "year": designated_date[:4],
             }
         )
     return rows
@@ -546,14 +613,19 @@ def main() -> None:
     output_path = Path(args.output)
     state_path = Path(args.state)
     active_state = None if (args.full or args.no_state or not output_path.exists()) else load_state(state_path)
+    history_urls = discover_history_urls()
 
     all_rows: list[dict[str, str]] = []
     year_counts: dict[int, int] = defaultdict(int)
-    for year, url in sorted(JPX_HISTORY_URLS.items(), reverse=True):
+    for url in history_urls:
         html = fetch_html(url)
-        parsed_rows = parse_history_table(html, year, url)
+        parsed_rows = parse_history_table(html, url)
+        for year in {int(row["year"]) for row in parsed_rows if row.get("year", "").isdigit()}:
+            year_counts[year] += 0
         filtered_rows = [row for row in parsed_rows if should_include_row(row, active_state)]
-        year_counts[year] = len(filtered_rows)
+        for row in filtered_rows:
+            if row.get("year", "").isdigit():
+                year_counts[int(row["year"])] += 1
         all_rows.extend(filtered_rows)
 
     converted_rows = convert_to_csv_rows(all_rows)
@@ -565,7 +637,7 @@ def main() -> None:
     print(f"総件数: {len(merged_rows)}")
     print(f"保存先: {output_path.resolve()}")
     print("年ごとの取得件数:")
-    for year in sorted(JPX_HISTORY_URLS):
+    for year in sorted(year_counts):
         print(f"  {year}: {year_counts.get(year, 0)}")
 
 

@@ -5,18 +5,15 @@
 `scrape_jpx_supervision_history.py` は、JPX の監理・整理銘柄指定履歴を取得し、`supervision.csv` を生成します。  
 差分更新用に `state.json` を管理します。
 
-対象年:
+取得対象ページ:
 
-- 2022年
-- 2023年
-- 2024年
-- 2025年
-- 2026年
+- `https://www.jpx.co.jp/listing/market-alerts/supervision/01.html`
+- 現行ページ内から見つかった `01-archives-XX.html`
 
 ## 入出力ファイル
 
 - 入力元
-  - JPX の年別履歴ページ
+  - JPX の指定履歴ページ
 - 出力
   - `supervision.csv`
   - `state.json`
@@ -122,6 +119,10 @@ state 更新基準:
 
 ## 取得・抽出ルール
 
+- `01.html` を起点に履歴ページURLを動的検出する
+- `option value` から `01.html` と `01-archives-XX.html` を優先抽出する
+- `option value` で取れない場合はリンクやHTML文字列から同URLを抽出する
+- 履歴ページが見つからない場合のみ `01-archives-01.html` から連番探索する
 - `指定履歴` セクションの表を対象にする
 - 表が直接見つからない場合は、必要列を含む最有力表にフォールバックする
 - 列名揺れは正規化して吸収する
@@ -164,4 +165,4 @@ warning 出力:
 
 - `--full` は既存 `supervision.csv` を再利用せず、取得結果で再生成する
 - 4列目が `2099/12/31` の行は、JPX 側で解除年月日が未設定の行
-- 対象年を増やす場合は、スクリプト内の URL 定義と休業日対象年を更新する
+- 年ごとの取得件数は取得できたページの `指定年月日` から集計する

@@ -12,6 +12,16 @@ import scrape_jpx_supervision_history as target
 
 
 class SupervisionCsvTests(unittest.TestCase):
+    @staticmethod
+    def make_row(code: str, start_date: str, end_date: str, reasons: dict[str, int]) -> dict[str, object]:
+        return {
+            "コード": code,
+            "市場": "t",
+            "開始日": start_date,
+            "終了前営業日": end_date,
+            "理由": reasons,
+        }
+
     def test_discover_history_urls_extracts_current_and_archives(self) -> None:
         html = """
         <html>
@@ -103,6 +113,101 @@ class SupervisionCsvTests(unittest.TestCase):
         self.assertEqual(len(merged_rows), 1)
         self.assertEqual(merged_rows[0]["監理銘柄（確認中）指定"], 1)
         self.assertEqual(merged_rows[0]["監理銘柄（審査中）指定"], 1)
+
+    def test_merge_rows_carries_forward_active_reasons_and_closes_previous_row(self) -> None:
+        merged_rows, reason_columns = target.merge_rows(
+            [
+                self.make_row(
+                    "3541",
+                    "2025/12/25",
+                    "2099/12/31",
+                    {"監理銘柄（確認中）指定": 1},
+                )
+            ],
+            [
+                self.make_row(
+                    "3541",
+                    "2026/04/10",
+                    "2099/12/31",
+                    {"上場廃止の決定・整理銘柄指定": 1},
+                )
+            ],
+            ["監理銘柄（確認中）指定"],
+        )
+
+        self.assertEqual(
+            reason_columns,
+            ["監理銘柄（確認中）指定", "上場廃止の決定・整理銘柄指定"],
+        )
+        self.assertEqual(len(merged_rows), 2)
+        rows_by_start = {row["開始日"]: row for row in merged_rows}
+        self.assertEqual(rows_by_start["2025/12/25"]["終了前営業日"], "2026/04/09")
+        self.assertEqual(rows_by_start["2025/12/25"]["監理銘柄（確認中）指定"], 1)
+        self.assertEqual(rows_by_start["2025/12/25"]["上場廃止の決定・整理銘柄指定"], 0)
+        self.assertEqual(rows_by_start["2026/04/10"]["終了前営業日"], "2099/12/31")
+        self.assertEqual(rows_by_start["2026/04/10"]["監理銘柄（確認中）指定"], 1)
+        self.assertEqual(rows_by_start["2026/04/10"]["上場廃止の決定・整理銘柄指定"], 1)
+
+    def test_merge_rows_carries_all_active_reasons_across_multiple_transitions(self) -> None:
+        merged_rows, _ = target.merge_rows(
+            [],
+            [
+                self.make_row(
+                    "1234",
+                    "2026/01/05",
+                    "2099/12/31",
+                    {"監理銘柄（確認中）指定": 1},
+                ),
+                self.make_row(
+                    "1234",
+                    "2026/02/10",
+                    "2099/12/31",
+                    {"監理銘柄（審査中）指定": 1},
+                ),
+                self.make_row(
+                    "1234",
+                    "2026/03/10",
+                    "2099/12/31",
+                    {"上場廃止の決定・整理銘柄指定": 1},
+                ),
+            ],
+            [],
+        )
+
+        rows_by_start = {row["開始日"]: row for row in merged_rows}
+        self.assertEqual(rows_by_start["2026/01/05"]["終了前営業日"], "2026/02/09")
+        self.assertEqual(rows_by_start["2026/02/10"]["終了前営業日"], "2026/03/09")
+        self.assertEqual(rows_by_start["2026/02/10"]["監理銘柄（確認中）指定"], 1)
+        self.assertEqual(rows_by_start["2026/02/10"]["監理銘柄（審査中）指定"], 1)
+        self.assertEqual(rows_by_start["2026/03/10"]["監理銘柄（確認中）指定"], 1)
+        self.assertEqual(rows_by_start["2026/03/10"]["監理銘柄（審査中）指定"], 1)
+        self.assertEqual(rows_by_start["2026/03/10"]["上場廃止の決定・整理銘柄指定"], 1)
+
+    def test_merge_rows_does_not_carry_forward_released_reasons(self) -> None:
+        merged_rows, _ = target.merge_rows(
+            [
+                self.make_row(
+                    "3541",
+                    "2025/12/25",
+                    "2026/04/09",
+                    {"監理銘柄（確認中）指定": 1},
+                )
+            ],
+            [
+                self.make_row(
+                    "3541",
+                    "2026/04/10",
+                    "2099/12/31",
+                    {"上場廃止の決定・整理銘柄指定": 1},
+                )
+            ],
+            [],
+        )
+
+        rows_by_start = {row["開始日"]: row for row in merged_rows}
+        self.assertEqual(rows_by_start["2025/12/25"]["終了前営業日"], "2026/04/09")
+        self.assertEqual(rows_by_start["2026/04/10"]["監理銘柄（確認中）指定"], 0)
+        self.assertEqual(rows_by_start["2026/04/10"]["上場廃止の決定・整理銘柄指定"], 1)
 
     def test_main_ignores_state_when_output_csv_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

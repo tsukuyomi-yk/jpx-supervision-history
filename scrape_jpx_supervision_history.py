@@ -406,6 +406,104 @@ def convert_to_csv_rows(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     return converted
 
 
+def parse_output_date(date_text: str) -> date | None:
+    normalized = normalize_text(date_text)
+    if not normalized:
+        return None
+    try:
+        return datetime.strptime(normalized, "%Y/%m/%d").date()
+    except ValueError:
+        return None
+
+
+def collapse_rows_by_key(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for row in rows:
+        key = (row["コード"], row["開始日"], row["終了前営業日"])
+        current = merged_map.setdefault(
+            key,
+            {
+                "コード": row["コード"],
+                "市場": normalize_text(row.get("市場", "")) or "t",
+                "開始日": row["開始日"],
+                "終了前営業日": row["終了前営業日"],
+                "理由": {},
+            },
+        )
+        if not normalize_text(current.get("市場", "")):
+            current["市場"] = normalize_text(row.get("市場", "")) or "t"
+        for reason, flag in row.get("理由", {}).items():
+            normalized = normalize_text(reason)
+            if normalized and flag:
+                current["理由"][normalized] = 1
+
+    return list(merged_map.values())
+
+
+def normalize_code_transition_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in collapse_rows_by_key(rows):
+        rows_by_code[row["コード"]].append(
+            {
+                "コード": row["コード"],
+                "市場": normalize_text(row.get("市場", "")) or "t",
+                "開始日": row["開始日"],
+                "終了前営業日": row["終了前営業日"],
+                "理由": dict(row.get("理由", {})),
+            }
+        )
+
+    normalized_rows: list[dict[str, Any]] = []
+    for code_rows in rows_by_code.values():
+        code_rows.sort(
+            key=lambda row: (
+                parse_output_date(row["開始日"]) or date.max,
+                parse_output_date(row["終了前営業日"]) or date.max,
+            )
+        )
+
+        normalized_code_rows: list[dict[str, Any]] = []
+        index = 0
+        while index < len(code_rows):
+            start_date_text = code_rows[index]["開始日"]
+            start_date = parse_output_date(start_date_text)
+            current_group: list[dict[str, Any]] = []
+            while index < len(code_rows) and code_rows[index]["開始日"] == start_date_text:
+                current_group.append(code_rows[index])
+                index += 1
+
+            if start_date is None:
+                normalized_code_rows.extend(current_group)
+                continue
+
+            active_rows: list[dict[str, Any]] = []
+            carried_reasons: dict[str, int] = {}
+            for previous_row in normalized_code_rows:
+                previous_end = parse_output_date(previous_row["終了前営業日"])
+                if previous_end is None or previous_end < start_date:
+                    continue
+                active_rows.append(previous_row)
+                for reason, flag in previous_row["理由"].items():
+                    if flag:
+                        carried_reasons[reason] = 1
+
+            if active_rows:
+                closed_end_date = previous_business_day(start_date_text)
+                for previous_row in active_rows:
+                    previous_row["終了前営業日"] = closed_end_date
+
+            for current_row in current_group:
+                merged_reasons = dict(carried_reasons)
+                merged_reasons.update(current_row["理由"])
+                current_row["理由"] = merged_reasons
+                normalized_code_rows.append(current_row)
+
+        normalized_rows.extend(collapse_rows_by_key(normalized_code_rows))
+
+    return normalized_rows
+
+
 def read_existing_csv(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     if not path.exists():
         return [], []
@@ -465,32 +563,12 @@ def merge_rows(
     existing_reason_columns: list[str],
 ) -> tuple[list[dict[str, Any]], list[str]]:
     reason_columns = extract_reason_columns(existing_rows + new_rows, existing_reason_columns)
-    merged_map: dict[tuple[str, str, str], dict[str, Any]] = {}
-
-    for row in existing_rows + new_rows:
-        key = (row["コード"], row["開始日"], row["終了前営業日"])
-        current = merged_map.setdefault(
-            key,
-            {
-                "コード": row["コード"],
-                "市場": normalize_text(row.get("市場", "")) or "t",
-                "開始日": row["開始日"],
-                "終了前営業日": row["終了前営業日"],
-                "理由": {},
-            },
-        )
-        if not normalize_text(current.get("市場", "")):
-            current["市場"] = normalize_text(row.get("市場", "")) or "t"
-        for reason, flag in row.get("理由", {}).items():
-            normalized = normalize_text(reason)
-            if normalized and flag:
-                current["理由"][normalized] = 1
-
-    if not merged_map:
+    normalized_rows = normalize_code_transition_rows(existing_rows + new_rows)
+    if not normalized_rows:
         return [], reason_columns
 
     combined_rows = []
-    for row in merged_map.values():
+    for row in collapse_rows_by_key(normalized_rows):
         csv_row = {
             "コード": row["コード"],
             "市場": row.get("市場", "t"),
