@@ -3,8 +3,9 @@
 ## 概要
 
 `scrape_jpx_supervision_history.py` は、JPX の「監理・整理銘柄一覧」の指定履歴ページを巡回し、`supervision.csv` と `state.json` を生成するスクリプトです。
+これらの出力ファイルは実行時に生成し、リポジトリには含めません。
 
-詳細仕様は [spec.md](C:\dropbox\Dropbox\codex_works\py\監理整理銘柄一覧取得\spec.md) を参照してください。
+詳細仕様は [spec.md](spec.md) を参照してください。
 
 `supervision.csv` の5列目以降は、JPX の `内容` ごとの理由列です。
 履歴ページURLは `01.html` から自動検出します。
@@ -93,7 +94,7 @@ python .\scrape_jpx_supervision_history.py --output .\out.csv --state .\out-stat
 
 ```text
 総件数: 716
-保存先: C:\dropbox\Dropbox\codex_works\py\監理整理銘柄一覧取得\supervision.csv
+保存先: C:\path\to\repo\supervision.csv
 年ごとの取得件数:
   2022: 106
   2023: 121

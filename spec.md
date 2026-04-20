@@ -18,6 +18,8 @@
   - `supervision.csv`
   - `state.json`
 
+`supervision.csv` と `state.json` は実行時に生成するファイルで、リポジトリには含めません。
+
 ## 出力CSV仕様
 
 ファイル名:

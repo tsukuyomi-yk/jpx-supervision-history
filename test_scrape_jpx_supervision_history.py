@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-import tempfile
+import shutil
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
@@ -210,9 +210,13 @@ class SupervisionCsvTests(unittest.TestCase):
         self.assertEqual(rows_by_start["2026/04/10"]["上場廃止の決定・整理銘柄指定"], 1)
 
     def test_main_ignores_state_when_output_csv_is_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output_path = Path(temp_dir) / "supervision.csv"
-            state_path = Path(temp_dir) / "state.json"
+        temp_dir = Path.cwd() / "_tmp_test_main_ignores_state_when_output_csv_is_missing"
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir()
+        try:
+            output_path = temp_dir / "supervision.csv"
+            state_path = temp_dir / "state.json"
             state_path.write_text('{"last_date":"2026-04-18","last_code":"9999"}', encoding="utf-8")
             args = Namespace(full=False, no_state=False, output=str(output_path), state=str(state_path))
 
@@ -230,6 +234,8 @@ class SupervisionCsvTests(unittest.TestCase):
                     target.main()
 
             load_state_mock.assert_not_called()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
